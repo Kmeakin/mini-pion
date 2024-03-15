@@ -8,6 +8,7 @@ use crate::symbol::Symbol;
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Prec {
     Atom,
+    Proj,
     App,
     Fun,
     Let,
@@ -22,10 +23,13 @@ impl Prec {
             | Expr::Prim(..)
             | Expr::Const(..)
             | Expr::LocalVar(..)
-            | Expr::MetaVar(..) => Self::Atom,
+            | Expr::MetaVar(..)
+            | Expr::RecordType(_)
+            | Expr::RecordLit(_) => Self::Atom,
             Expr::Let { .. } | Expr::If { .. } => Self::Let,
             Expr::FunType { .. } | Expr::FunLit { .. } => Self::Fun,
             Expr::FunApp { .. } => Self::App,
+            Expr::RecordProj(..) => Self::Proj,
         }
     }
 }
@@ -129,6 +133,7 @@ impl<'bump> Printer<'bump> {
         prec: Prec,
     ) -> DocBuilder<'bump> {
         let doc = match expr {
+            Expr::Error => self.text("#error"),
             Expr::Const(r#const) => self.r#const(*r#const),
             Expr::LocalVar(var) if self.config.print_names => match names.get_relative(*var) {
                 Some(Some(name)) => self.text(name.to_string()),
@@ -243,8 +248,35 @@ impl<'bump> Printer<'bump> {
                 let arg = self.fun_arg(names, arg);
                 fun.append(self.space()).append(arg)
             }
-            Expr::Error => self.text("#error"),
             Expr::Prim(prim) => self.text(prim.name()),
+            Expr::RecordType(type_fields) => {
+                let type_fields = type_fields.iter().map(|(name, r#type)| {
+                    let field = self.name(Some(*name)).append(": ").append(self.expr_prec(
+                        names,
+                        r#type,
+                        Prec::MAX,
+                    ));
+                    field
+                });
+                let type_fields = self.intersperse(type_fields, self.text(", "));
+                self.text("{").append(type_fields).append("}")
+            }
+            Expr::RecordLit(expr_fields) => {
+                let expr_fields = expr_fields.iter().map(|(name, expr)| {
+                    self.name(Some(*name)).append(" = ").append(self.expr_prec(
+                        names,
+                        expr,
+                        Prec::MAX,
+                    ))
+                });
+                self.text("{")
+                    .append(self.intersperse(expr_fields, self.text(", ")))
+                    .append("}")
+            }
+            Expr::RecordProj(scrut, name) => {
+                let scrut = self.expr_prec(names, scrut, Prec::Proj);
+                scrut.append(".").append(self.name(Some(*name)))
+            }
         };
         if prec < Prec::of_expr(expr) {
             self.text("(").append(doc).append(")")

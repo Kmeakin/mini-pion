@@ -27,7 +27,7 @@ Minimalist reimplementation of [pion](github.com/kmeakin/pion)
 
 * [ ] aggregate types
     * [x] dependent pairs
-    * [ ] record types
+    * [x] record types
     * [ ] sum types
     * [ ] row types
 

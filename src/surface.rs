@@ -7,6 +7,7 @@ pub use lexer::{lex, Token, TokenKind};
 use text_size::{TextRange, TextSize};
 
 use crate::plicity::Plicity;
+use crate::symbol::Symbol;
 
 lalrpop_mod!(
     #[allow(
@@ -75,6 +76,26 @@ pub enum Expr<'surface> {
         fun: &'surface Located<Self>,
         arg: Located<FunArg<'surface>>,
     },
+
+    TupleLit(&'surface [Located<Self>]),
+    RecordType(&'surface [Located<TypeField<'surface>>]),
+    RecordLit(&'surface [Located<ExprField<'surface>>]),
+    RecordProj {
+        scrut: &'surface Located<Self>,
+        name: Located<Symbol>,
+    },
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct TypeField<'surface> {
+    pub name: Located<Symbol>,
+    pub r#type: Located<Expr<'surface>>,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct ExprField<'surface> {
+    pub name: Located<Symbol>,
+    pub expr: Located<Expr<'surface>>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -179,7 +200,7 @@ pub fn parse_expr<'surface, E>(
         .filter(|token| !token.kind.is_trivia())
         .map(|token| (token.range.start(), token.kind, token.range.end()));
     let mut errors = Vec::new();
-    let expr = match grammar::ExprParser::new().parse(bump, &mut errors, tokens) {
+    let expr = match grammar::ExprParser::new().parse(bump, text, &mut errors, tokens) {
         Ok(expr) => expr,
         Err(error) => {
             let range = error_range(&error);

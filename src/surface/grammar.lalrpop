@@ -1,12 +1,14 @@
 use text_size::{TextRange, TextSize};
 use codespan_reporting::diagnostic::Diagnostic;
 
-use crate::surface::{Const, Expr, Located, Pat, Token, TokenKind, FunParam, FunArg, Rec};
+use crate::surface::{Const, Expr, Located, Pat, Token, TokenKind, FunParam, FunArg, Rec, ExprField, TypeField};
 use crate::surface::LalrpopError;
 use crate::plicity::Plicity;
+use crate::symbol::Symbol;
 
-grammar<'surface>(
+grammar<'surface, 'text>(
     bump: &'surface bumpalo::Bump,
+    text: &'text str,
     errors: &mut Vec<LalrpopError>,
 );
 
@@ -34,6 +36,7 @@ extern {
         "," => TokenKind::Comma,
         ";" => TokenKind::Semicolon,
         ":" => TokenKind::Colon,
+        "." => TokenKind::Dot,
         "@" => TokenKind::At,
         "=" => TokenKind::Eq,
         "=>" => TokenKind::DoubleArrow,
@@ -96,15 +99,6 @@ FunExpr: Located<Expr<'surface>> = {
     AppExpr => <>,
 }
 
-AppExpr: Located<Expr<'surface>> = {
-    <start: @L> <fun: AppExpr> <arg: FunArg> <end: @R> => {
-        let range = TextRange::new(start, end);
-        let (fun, ) = bump.alloc((fun, ));
-        Located::new(range, Expr::FunApp { fun, arg })
-    },
-    AtomExpr => <>,
-}
-
 FunParam: Located<FunParam<'surface>> = {
     <start: @L> "(" <plicity: Plicity> <pat: Pat> ":" <r#type: Expr> ")" <end: @R> => {
         let range = TextRange::new(start, end);
@@ -114,6 +108,24 @@ FunParam: Located<FunParam<'surface>> = {
         let range = TextRange::new(start, end);
         Located::new(range, FunParam { plicity, pat, r#type: None })
     }
+}
+
+AppExpr: Located<Expr<'surface>> = {
+    <start: @L> <fun: AppExpr> <arg: FunArg> <end: @R> => {
+        let range = TextRange::new(start, end);
+        let (fun, ) = bump.alloc((fun, ));
+        Located::new(range, Expr::FunApp { fun, arg })
+    },
+    ProjExpr => <>,
+}
+
+ProjExpr: Located<Expr<'surface>> = {
+    <start: @L> <scrut: ProjExpr> "." <name: Ident> <end: @R> => {
+        let range = TextRange::new(start, end);
+        let (scrut, ) = bump.alloc((scrut, ));
+        Located::new(range, Expr::RecordProj { scrut, name })
+    },
+    AtomExpr => <>,
 }
 
 FunArg: Located<FunArg<'surface>> = {
@@ -140,6 +152,24 @@ AtomExpr: Located<Expr<'surface>> = {
     <start: @L> "Ident" <end: @R> => Located::new(TextRange::new(start, end), Expr::LocalVar),
     <start: @L> "_" <end: @R> => Located::new(TextRange::new(start, end), Expr::Hole),
     <start: @L> "(" <expr: Expr> ")" <end: @R> => Located::new(TextRange::new(start, end), Expr::Paren { expr: bump.alloc(expr) }),
+    <start: @L> <exprs: Tuple<Expr>> <end: @R> => Located::new(TextRange::new(start, end), Expr::TupleLit(exprs)),
+    <start: @L> "{" "}" <end: @R> => Located::new(TextRange::new(start, end), Expr::TupleLit(&[])),
+    <start: @L> "{" <fields: Sep1<TypeField, ",">> "}" <end: @R> => Located::new(TextRange::new(start, end), Expr::RecordType(fields)),
+    <start: @L> "{" <fields: Sep1<ExprField, ",">> "}" <end: @R> => Located::new(TextRange::new(start, end), Expr::RecordLit(fields)),
+}
+
+Tuple<Elem>: &'surface [Elem] = {
+    "(" ")" => &[],
+    "(" <elem: Elem> "," ")" => bump.alloc_slice_copy(&[elem]),
+    "(" <elems: Sep2<Elem, ",">> ")" => elems,
+}
+
+TypeField: Located<TypeField<'surface>> = {
+    <start: @L> <name: Ident> ":" <r#type: Expr> <end: @R> => Located::new(TextRange::new(start, end), TypeField { name, r#type }),
+}
+
+ExprField: Located<ExprField<'surface>> = {
+    <start: @L> <name: Ident> "=" <expr: Expr> <end: @R> => Located::new(TextRange::new(start, end), ExprField { name, expr }),
 }
 
 Pat: Located<Pat<'surface>> = {
@@ -165,6 +195,14 @@ Const: Const = {
     "HexInt" => Const::HexInt,
 }
 
+Ident: Located<Symbol> = {
+    <start: @L> "Ident" <end: @R> => {
+        let range = TextRange::new(start, end);
+        let text = &text[range];
+        Located::new(range, Symbol::intern(text))
+    }
+}
+
 Sep0<Elem, Sep>: &'surface [Elem] = {
     <mut elems: (<Elem> Sep)*> <last: Elem?> => {
         elems.extend(last);
@@ -174,6 +212,13 @@ Sep0<Elem, Sep>: &'surface [Elem] = {
 
 Sep1<Elem, Sep>: &'surface [Elem] = {
     <mut elems: (<Elem> Sep)*> <last: Elem> Sep? => {
+        elems.push(last);
+        bump.alloc_slice_copy(&elems)
+    }
+};
+
+Sep2<Elem, Sep>: &'surface [Elem] = {
+    <mut elems: (<Elem> Sep)+> <last: Elem> Sep? => {
         elems.push(last);
         bump.alloc_slice_copy(&elems)
     }

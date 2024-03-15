@@ -3,10 +3,11 @@ use text_size::TextRange;
 
 use self::unify::{PartialRenaming, UnifyCtx, UnifyError};
 use crate::core::prim::Prim;
-use crate::core::semantics::{self, Closure, EvalOpts, Type, Value};
+use crate::core::semantics::{self, Closure, EvalOpts, Telescope, Type, Value};
 use crate::core::syntax::{Const, Expr, FunArg, FunParam};
 use crate::env::{AbsoluteVar, EnvLen, RelativeVar, SharedEnv, UniqueEnv};
 use crate::plicity::Plicity;
+use crate::slice_vec::SliceVec;
 use crate::surface::{self, Located};
 use crate::symbol::Symbol;
 
@@ -70,6 +71,13 @@ impl<'core> LocalEnv<'core> {
         self.infos.pop();
         self.types.pop();
         self.values.pop();
+    }
+
+    pub fn truncate(&mut self, len: EnvLen) {
+        self.names.truncate(len);
+        self.infos.truncate(len);
+        self.types.truncate(len);
+        self.values.truncate(len);
     }
 
     pub fn lookup(&self, sym: Symbol) -> Option<RelativeVar> {
@@ -229,6 +237,15 @@ where
         semantics::quote(
             self.bump,
             self.local_env.values.len(),
+            &self.meta_env.values,
+            value,
+        )
+    }
+
+    pub fn quote_offset(&mut self, value: &Value<'core>, offset: usize) -> Expr<'core> {
+        semantics::quote(
+            self.bump,
+            self.local_env.values.len() + EnvLen::from(offset),
             &self.meta_env.values,
             value,
         )
@@ -441,6 +458,102 @@ where
                 let core_expr = Expr::FunApp { fun, arg };
                 Ok((core_expr, output_type))
             }
+            surface::Expr::TupleLit(surface_exprs) => {
+                let mut expr_fields = SliceVec::new(self.bump, surface_exprs.len());
+                let mut type_fields = SliceVec::new(self.bump, surface_exprs.len());
+
+                for (index, surface_expr) in surface_exprs.iter().enumerate() {
+                    let (expr, r#type) = self.synth_expr(surface_expr)?;
+                    let name = Symbol::tuple_index(index as u32);
+                    expr_fields.push((name, expr));
+                    type_fields.push((name, self.quote_offset(&r#type, index)));
+                }
+
+                let telescope = Telescope::new(self.local_env.values.clone(), type_fields.into());
+                Ok((
+                    Expr::RecordLit(expr_fields.into()),
+                    Type::RecordType(telescope),
+                ))
+            }
+            surface::Expr::RecordType(surface_fields) => {
+                let mut type_fields = SliceVec::new(self.bump, surface_fields.len());
+
+                for surface_field in surface_fields {
+                    let r#type = self.check_expr_is_type(&surface_field.data.r#type)?;
+                    type_fields.push((surface_field.data.name.data, r#type));
+                }
+
+                Ok((Expr::RecordType(type_fields.into()), Type::TYPE))
+            }
+            surface::Expr::RecordLit(surface_fields) => {
+                let mut expr_fields = SliceVec::new(self.bump, surface_fields.len());
+                let mut type_fields = SliceVec::new(self.bump, surface_fields.len());
+
+                for (index, surface_field) in surface_fields.iter().enumerate() {
+                    let (expr, r#type) = self.synth_expr(&surface_field.data.expr)?;
+                    let name = surface_field.data.name.data;
+                    expr_fields.push((name, expr));
+                    type_fields.push((name, self.quote_offset(&r#type, index)));
+                }
+
+                let telescope = Telescope::new(self.local_env.values.clone(), type_fields.into());
+                Ok((
+                    Expr::RecordLit(expr_fields.into()),
+                    Type::RecordType(telescope),
+                ))
+            }
+            surface::Expr::RecordProj { scrut, name } => {
+                let (scrut_expr, scrut_type) = self.synth_expr(scrut)?;
+
+                let scrut_type = semantics::update_metas(
+                    self.bump,
+                    EvalOpts::default(),
+                    &self.meta_env.values,
+                    &scrut_type,
+                );
+
+                match scrut_type {
+                    Value::RecordType(mut telescope) => {
+                        let Some(_) = telescope.fields.iter().find(|(n, _)| *n == name.data) else {
+                            self.report_diagnostic(
+                                Diagnostic::error()
+                                    .with_message(format!("Field `{}` not found", name.data))
+                                    .with_labels(vec![Label::primary(self.file_id, name.range)]),
+                            )?;
+                            return Ok((Expr::Error, Type::Error));
+                        };
+
+                        let scrut_value = self.eval(&scrut_expr);
+                        while let Some((n, r#type, update_telescope)) = semantics::split_telescope(
+                            self.bump,
+                            EvalOpts::default(),
+                            &self.meta_env.values,
+                            &mut telescope,
+                        ) {
+                            if n == name.data {
+                                let expr = Expr::RecordProj(self.bump.alloc(scrut_expr), name.data);
+                                return Ok((expr, r#type));
+                            }
+
+                            let projected = semantics::record_proj(scrut_value.clone(), name.data);
+                            update_telescope(projected);
+                        }
+
+                        unreachable!()
+                    }
+                    Value::Error => Ok((Expr::Error, Type::Error)),
+                    _ => {
+                        let scrut_type = self.quote(&scrut_type);
+                        let scrut_type = self.pretty(&scrut_type);
+                        self.report_diagnostic(
+                            Diagnostic::error()
+                                .with_message(format!("Expected record, found `{scrut_type}`"))
+                                .with_labels(vec![Label::primary(self.file_id, name.range)]),
+                        )?;
+                        Ok((Expr::Error, Type::Error))
+                    }
+                }
+            }
         }
     }
 
@@ -604,6 +717,47 @@ where
             }
             surface::Expr::FunLit { params, body } => self.check_fun_lit(params, body, &expected),
 
+            surface::Expr::TupleLit(surface_exprs) if expected.is_type() => {
+                let len = self.local_env.len();
+                let mut type_fields = SliceVec::new(self.bump, surface_exprs.len());
+                for (index, expr) in surface_exprs.iter().enumerate() {
+                    let name = Symbol::tuple_index(index as u32);
+                    let r#type = self.check_expr_is_type(expr)?;
+                    let r#type_value = self.eval(&r#type);
+                    self.local_env.push_param(None, type_value);
+                    type_fields.push((name, r#type));
+                }
+                let expr = Expr::RecordType(r#type_fields.into());
+                self.local_env.truncate(len);
+                Ok(expr)
+            }
+            surface::Expr::RecordLit(surface_fields) => match expected {
+                Value::RecordType(mut telescope)
+                    if telescope.fields.len() == surface_fields.len()
+                        && surface_fields
+                            .iter()
+                            .map(|field| field.data.name.data)
+                            .eq(telescope.fields.iter().map(|(n, _)| *n)) =>
+                {
+                    let mut expr_fields = SliceVec::new(self.bump, surface_fields.len());
+                    for surface_field in surface_fields {
+                        let (name, r#type, update_telescope) = semantics::split_telescope(
+                            self.bump,
+                            EvalOpts::default(),
+                            &self.meta_env.values,
+                            &mut telescope,
+                        )
+                        .unwrap();
+                        let expr = self.check_expr(&surface_field.data.expr, &r#type)?;
+                        let value = self.eval(&expr);
+                        update_telescope(value);
+                        expr_fields.push((name, expr));
+                    }
+                    Ok(Expr::RecordLit(expr_fields.into()))
+                }
+                _ => self.synth_and_convert_expr(surface_expr, &expected),
+            },
+
             // list cases explicitly instead of using `_` so that new cases are not forgotten when
             // new expression variants are added
             surface::Expr::Const(..)
@@ -611,7 +765,12 @@ where
             | surface::Expr::Ann { .. }
             | surface::Expr::FunArrow { .. }
             | surface::Expr::FunType { .. }
-            | surface::Expr::FunApp { .. } => self.synth_and_convert_expr(surface_expr, &expected),
+            | surface::Expr::FunApp { .. }
+            | surface::Expr::TupleLit(..)
+            | surface::Expr::RecordType(..)
+            | surface::Expr::RecordProj { .. } => {
+                self.synth_and_convert_expr(surface_expr, &expected)
+            }
         }
     }
 

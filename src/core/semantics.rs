@@ -5,6 +5,8 @@ use super::prim::Prim;
 use super::syntax::{Const, Expr, FunArg, FunParam};
 use crate::env::{AbsoluteVar, EnvLen, SharedEnv, SliceEnv};
 use crate::plicity::Plicity;
+use crate::slice_vec::SliceVec;
+use crate::symbol::Symbol;
 
 pub type Type<'core> = Value<'core>;
 
@@ -24,6 +26,8 @@ pub enum Value<'core> {
         param: FunParam<&'core Self>,
         body: Closure<'core>,
     },
+    RecordType(Telescope<'core>),
+    RecordLit(&'core [(Symbol, Self)]),
 }
 
 impl<'core> Value<'core> {
@@ -52,6 +56,10 @@ impl<'core> Value<'core> {
             spine: EcoVec::new(),
         }
     }
+
+    pub const fn is_type(&self) -> bool {
+        matches!(self, Self::Neutral { head:Head::Prim(Prim::Type), spine } if spine.is_empty())
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -64,6 +72,7 @@ pub enum Head {
 #[derive(Debug, Clone)]
 pub enum Elim<'core> {
     FunApp(FunArg<Value<'core>>),
+    RecordProj(Symbol),
     BoolCases(BoolCases<'core>),
 }
 
@@ -100,6 +109,26 @@ impl<'core> Closure<'core> {
     }
 
     pub const fn empty(body: &'core Expr<'core>) -> Self { Self::new(LocalValues::new(), body) }
+}
+
+#[derive(Debug, Clone)]
+pub struct Telescope<'core> {
+    pub local_values: LocalValues<'core>,
+    pub fields: &'core [(Symbol, Expr<'core>)],
+}
+
+impl<'core> Telescope<'core> {
+    pub const fn new(
+        local_values: LocalValues<'core>,
+        fields: &'core [(Symbol, Expr<'core>)],
+    ) -> Self {
+        Self {
+            local_values,
+            fields,
+        }
+    }
+
+    pub fn len(&self) -> usize { self.fields.len() }
 }
 
 pub type LocalValues<'core> = SharedEnv<Value<'core>>;
@@ -170,6 +199,18 @@ pub fn eval<'core>(
                 eval(bump, opts, local_values, meta_values, arg.expr),
             );
             fun_app(bump, opts, meta_values, fun, arg)
+        }
+        Expr::RecordType(type_fields) => {
+            Value::RecordType(Telescope::new(local_values.clone(), type_fields))
+        }
+        Expr::RecordLit(expr_fields) => {
+            Value::RecordLit(bump.alloc_slice_fill_iter(expr_fields.iter().map(
+                |(symbol, expr)| (*symbol, eval(bump, opts, local_values, meta_values, expr)),
+            )))
+        }
+        Expr::RecordProj(scrut, name) => {
+            let scrut = eval(bump, opts, local_values, meta_values, scrut);
+            record_proj(scrut, *name)
         }
     }
 }
@@ -307,6 +348,35 @@ pub fn apply_bool_elim<'core>(
     }
 }
 
+pub fn record_proj<'core>(scrut: Value<'core>, name: Symbol) -> Value<'core> {
+    match scrut {
+        Value::Error => Value::Error,
+        Value::Neutral { head, mut spine } => {
+            spine.push(Elim::RecordProj(name));
+            Value::Neutral { head, spine }
+        }
+        Value::RecordLit(fields) => match (fields.iter()).find(|(n, _)| *n == name) {
+            Some((_, value)) => value.clone(),
+            None => panic!("Invalid record projection"),
+        },
+        _ => panic!("Invalid record projection"),
+    }
+}
+
+pub fn split_telescope<'core, 'tele>(
+    bump: &'core bumpalo::Bump,
+    opts: EvalOpts,
+    meta_values: &MetaValues<'core>,
+    telescope: &'tele mut Telescope<'core>,
+) -> Option<(Symbol, Value<'core>, impl FnOnce(Value<'core>) + 'tele)> {
+    let ((name, expr), fields) = telescope.fields.split_first()?;
+    let value = eval(bump, opts, &mut telescope.local_values, meta_values, expr);
+    Some((*name, value, move |prev| {
+        telescope.local_values.push(prev);
+        telescope.fields = fields;
+    }))
+}
+
 pub fn quote<'core>(
     bump: &'core bumpalo::Bump,
     local_len: EnvLen,
@@ -338,6 +408,7 @@ pub fn quote<'core>(
                     let (cond, then, r#else) = bump.alloc((head, then, r#else));
                     Expr::If { cond, then, r#else }
                 }
+                Elim::RecordProj(name) => Expr::RecordProj(bump.alloc(head), *name),
             })
         }
         Value::FunLit { param, body } => {
@@ -349,6 +420,27 @@ pub fn quote<'core>(
             Expr::FunType { param, body }
         }
         Value::Const(r#const) => Expr::Const(r#const),
+        Value::RecordType(mut telescope) => {
+            let mut local_len = local_len;
+            let mut expr_fields = SliceVec::new(bump, telescope.fields.len());
+            while let Some((name, value, update_telescope)) =
+                split_telescope(bump, opts, meta_values, &mut telescope)
+            {
+                let var = Value::local_var(local_len.to_absolute());
+                update_telescope(var);
+                let expr = quote(bump, local_len, meta_values, &value);
+                expr_fields.push((name, expr));
+                local_len.push();
+            }
+            Expr::RecordType(expr_fields.into())
+        }
+        Value::RecordLit(expr_fields) => Expr::RecordLit(
+            bump.alloc_slice_fill_iter(
+                expr_fields
+                    .iter()
+                    .map(|(name, value)| (*name, quote(bump, local_len, meta_values, value))),
+            ),
+        ),
     }
 }
 
@@ -408,6 +500,7 @@ pub fn update_metas<'core>(
                 value = (spine.into_iter()).fold(head.clone(), |head, elim| match elim {
                     Elim::FunApp(arg) => fun_app(bump, opts, meta_values, head, arg),
                     Elim::BoolCases(cases) => apply_bool_elim(bump, opts, meta_values, cases, head),
+                    Elim::RecordProj(name) => record_proj(head, name),
                 });
             }
             Some(None) => {
@@ -480,7 +573,7 @@ pub fn zonk<'core>(
             }
         }
 
-        Expr::MetaVar(..) | Expr::FunApp { .. } | Expr::If { .. } => {
+        Expr::MetaVar(..) | Expr::FunApp { .. } | Expr::If { .. } | Expr::RecordProj(..) => {
             match zonk_meta_var_spines(bump, local_values, meta_values, expr) {
                 Left(expr) => expr,
                 Right(value) => {
@@ -489,6 +582,24 @@ pub fn zonk<'core>(
                 }
             }
         }
+        Expr::RecordType(type_fields) => {
+            let local_len = local_values.len();
+            let expr_fields = bump.alloc_slice_fill_iter(type_fields.iter().map(|(name, expr)| {
+                let r#type = zonk(bump, local_values, meta_values, expr);
+                let var = Value::local_var(local_values.len().to_absolute());
+                local_values.push(var);
+                (*name, r#type)
+            }));
+            local_values.truncate(local_len);
+            Expr::RecordType(expr_fields)
+        }
+        Expr::RecordLit(expr_fields) => Expr::RecordLit(
+            bump.alloc_slice_fill_iter(
+                expr_fields
+                    .iter()
+                    .map(|(name, expr)| (*name, zonk(bump, local_values, meta_values, expr))),
+            ),
+        ),
     }
 }
 
@@ -532,6 +643,13 @@ fn zonk_meta_var_spines<'core>(
                     let arg = FunArg::new(arg.plicity, arg_value);
                     Right(fun_app(bump, opts, meta_values, fun_value, arg))
                 }
+            }
+        }
+        Expr::RecordProj(scrut, name) => {
+            let scrut = zonk_meta_var_spines(bump, local_values, meta_values, scrut);
+            match scrut {
+                Left(scrut_expr) => Left(Expr::RecordProj(bump.alloc(scrut_expr), *name)),
+                Right(scrut_value) => Right(record_proj(scrut_value, *name)),
             }
         }
         Expr::If { cond, then, r#else } => {

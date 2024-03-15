@@ -35,6 +35,10 @@ pub enum Expr<'core> {
         fun: &'core Self,
         arg: FunArg<&'core Self>,
     },
+
+    RecordType(&'core [(Symbol, Self)]),
+    RecordLit(&'core [(Symbol, Self)]),
+    RecordProj(&'core Self, Symbol),
 }
 
 impl<'core> Expr<'core> {
@@ -64,6 +68,11 @@ impl<'core> Expr<'core> {
             Expr::FunApp { fun, arg } => {
                 fun.references_local(var) || arg.expr.references_local(var)
             }
+            Expr::RecordType(fields) => RelativeVar::iter_from(var)
+                .zip(fields.iter())
+                .any(|(var, (_, r#type))| r#type.references_local(var)),
+            Expr::RecordLit(fields) => fields.iter().any(|(_, expr)| expr.references_local(var)),
+            Expr::RecordProj(scrut, _) => scrut.references_local(var),
         }
     }
 }

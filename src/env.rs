@@ -1,5 +1,5 @@
 use core::fmt;
-use std::ops::{Deref, DerefMut};
+use std::ops::{Add, Deref, DerefMut};
 
 use ecow::EcoVec;
 
@@ -28,6 +28,9 @@ impl RelativeVar {
     pub const fn new(value: usize) -> Self { Self(value) }
     pub const fn succ(self) -> Self { Self(self.0 + 1) }
     pub fn pred(self) -> Option<Self> { Some(Self(self.0.checked_sub(1)?)) }
+
+    pub fn iter() -> impl Iterator<Item = Self> { (0..).map(Self) }
+    pub fn iter_from(start: Self) -> impl Iterator<Item = Self> { (start.0..).map(Self) }
 }
 
 impl From<usize> for RelativeVar {
@@ -97,6 +100,11 @@ impl EnvLen {
 
     /// Reset the environment to the empty environment.
     pub fn clear(&mut self) { self.0 = 0; }
+}
+
+impl Add for EnvLen {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self::Output { Self(self.0 + rhs.0) }
 }
 
 /// An environment that is cheap to mutate, but expensive (*O(n)*) to clone.

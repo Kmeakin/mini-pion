@@ -69,10 +69,10 @@ impl From<lasso::Spur> for Symbol {
 }
 
 impl Symbol {
-    pub fn intern(sym: impl AsRef<str>) -> Self {
-        let sym = sym.as_ref();
-        let sym = sym.strip_prefix("r#").unwrap_or(sym);
-        (INTERNER.get_or_intern(sym)).into()
+    pub fn intern(text: impl AsRef<str>) -> Self {
+        let text = text.as_ref();
+        let text = text.strip_prefix("r#").unwrap_or(text);
+        (INTERNER.get_or_intern(text)).into()
     }
 
     pub fn get(sym: impl AsRef<str>) -> Option<Self> { INTERNER.get(sym).map(Self::from) }
