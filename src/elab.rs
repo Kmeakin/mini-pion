@@ -477,11 +477,16 @@ where
             }
             surface::Expr::RecordType(surface_fields) => {
                 let mut type_fields = SliceVec::new(self.bump, surface_fields.len());
+                let local_len = self.local_env.len();
 
                 for surface_field in surface_fields {
+                    let name = surface_field.data.name.data;
                     let r#type = self.check_expr_is_type(&surface_field.data.r#type)?;
-                    type_fields.push((surface_field.data.name.data, r#type));
+                    let r#type_value = self.eval(&r#type);
+                    type_fields.push((name, r#type));
+                    self.local_env.push_param(Some(name), r#type_value);
                 }
+                self.local_env.truncate(local_len);
 
                 Ok((Expr::RecordType(type_fields.into()), Type::TYPE))
             }

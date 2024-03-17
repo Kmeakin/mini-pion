@@ -488,3 +488,34 @@ fact : Int -> Int"#]],
         expect!["120 : Int"],
     );
 }
+
+#[test]
+fn record_literals() {
+    check("{}", expect!["{} : {}"]);
+    check(
+        "{x=1, y=false}",
+        expect!["{x = 1, y = false} : {x : Int, y : Bool}"],
+    );
+    check("{x=1, y=false}.x", expect!["{x = 1, y = false}.x : Int"]);
+    eval("{x=1, y=false}.x", expect!["1 : Int"]);
+}
+
+#[test]
+fn record_types() {
+    check("{} : Type", expect!["{} : Type"]);
+    check("{x: Int}", expect!["{x : Int} : Type"]);
+    check("{A: Type, a: A}", expect!["{A : Type, a : A} : Type"]);
+}
+
+#[test]
+fn tuple_literals() {
+    check("()", expect!["{} : {}"]);
+    check("(1,)", expect!["{_0 = 1} : {_0 : Int}"]);
+    check(
+        "(1,2,3)",
+        expect!["{_0 = 1, _1 = 2, _2 = 3} : {_0 : Int, _1 : Int, _2 : Int}"],
+    );
+    check("() : Type", expect!["{} : Type"]);
+    check("(Bool,) : Type", expect!["{_0 : Bool} : Type"]);
+    check("(Bool, Int) : Type", expect!["{_0 : Bool, _1 : Int} : Type"]);
+}

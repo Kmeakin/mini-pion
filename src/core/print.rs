@@ -112,7 +112,7 @@ impl<'bump> Printer<'bump> {
                 .append(self.hardline())
                 .append(body)
         } else {
-            let expr = self.expr_prec(names, expr, Prec::Atom);
+            let expr = self.expr_prec(names, expr, Prec::Proj);
             let r#type = self.expr_prec(names, r#type, Prec::MAX);
             expr.append(" : ").append(r#type)
         }
@@ -251,11 +251,12 @@ impl<'bump> Printer<'bump> {
             Expr::Prim(prim) => self.text(prim.name()),
             Expr::RecordType(type_fields) => {
                 let type_fields = type_fields.iter().map(|(name, r#type)| {
-                    let field = self.name(Some(*name)).append(": ").append(self.expr_prec(
+                    let field = self.name(Some(*name)).append(" : ").append(self.expr_prec(
                         names,
                         r#type,
                         Prec::MAX,
                     ));
+                    names.push(Some(*name));
                     field
                 });
                 let type_fields = self.intersperse(type_fields, self.text(", "));
