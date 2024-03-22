@@ -104,6 +104,23 @@ impl<T> FunArg<T> {
     pub const fn new(plicity: Plicity, expr: T) -> Self { Self { plicity, expr } }
 }
 
+#[derive(Debug, Copy, Clone)]
+pub enum Pat<'core> {
+    Error,
+    Underscore,
+    Ident(Symbol),
+    RecordLit(&'core [(Symbol, Self)]),
+}
+
+impl<'core> Pat<'core> {
+    pub(crate) fn name(&self) -> Option<Symbol> {
+        match self {
+            Pat::Ident(symbol) => Some(*symbol),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Const {
     Bool(bool),

@@ -4,7 +4,7 @@ use text_size::TextRange;
 use self::unify::{PartialRenaming, UnifyCtx, UnifyError};
 use crate::core::prim::Prim;
 use crate::core::semantics::{self, Closure, EvalOpts, Telescope, Type, Value};
-use crate::core::syntax::{Const, Expr, FunArg, FunParam};
+use crate::core::syntax::{Const, Expr, FunArg, FunParam, Pat};
 use crate::env::{AbsoluteVar, EnvLen, RelativeVar, SharedEnv, UniqueEnv};
 use crate::plicity::Plicity;
 use crate::slice_vec::SliceVec;
@@ -242,7 +242,7 @@ where
         )
     }
 
-    pub fn quote_offset(&mut self, value: &Value<'core>, offset: usize) -> Expr<'core> {
+    pub fn quote_offset(&mut self, value: &Value<'core>, offset: EnvLen) -> Expr<'core> {
         semantics::quote(
             self.bump,
             self.local_env.values.len() + EnvLen::from(offset),
@@ -466,7 +466,7 @@ where
                     let (expr, r#type) = self.synth_expr(surface_expr)?;
                     let name = Symbol::tuple_index(index);
                     expr_fields.push((name, expr));
-                    type_fields.push((name, self.quote_offset(&r#type, index)));
+                    type_fields.push((name, self.quote_offset(&r#type, EnvLen::from(index))));
                 }
 
                 let telescope = Telescope::new(self.local_env.values.clone(), type_fields.into());
@@ -498,7 +498,7 @@ where
                     let (expr, r#type) = self.synth_expr(&surface_field.data.expr)?;
                     let name = surface_field.data.name.data;
                     expr_fields.push((name, expr));
-                    type_fields.push((name, self.quote_offset(&r#type, index)));
+                    type_fields.push((name, self.quote_offset(&r#type, EnvLen::from(index))));
                 }
 
                 let telescope = Telescope::new(self.local_env.values.clone(), type_fields.into());
@@ -864,7 +864,8 @@ where
             &'surface Located<surface::Expr<'surface>>,
         ) -> Result<(Expr<'core>, T), E>,
     ) -> Result<(Expr<'core>, T), E> {
-        let (name, r#type) = self.synth_ann_pat(surface_pat, surface_type)?;
+        let (pat, r#type) = self.synth_ann_pat(surface_pat, surface_type)?;
+        let name = pat.name();
         let init_expr = self.check_expr(surface_init, &r#type)?;
         let init_value = self.eval(&init_expr);
 
@@ -897,7 +898,8 @@ where
             &'surface Located<surface::Expr<'surface>>,
         ) -> Result<(Expr<'core>, T), E>,
     ) -> Result<(Expr<'core>, T), E> {
-        let (name, mut r#type) = self.synth_ann_pat(surface_pat, surface_type)?;
+        let (pat, mut r#type) = self.synth_ann_pat(surface_pat, surface_type)?;
+        let name = pat.name();
 
         let init_expr = {
             let var = self.local_env.next_var();
@@ -1041,8 +1043,9 @@ where
         surface_param: &'surface Located<surface::FunParam<'surface>>,
     ) -> Result<(FunParam<&'core Expr<'core>>, Type<'core>), E> {
         let surface_param = surface_param.data;
-        let (name, r#type_value) =
+        let (pat, r#type_value) =
             self.synth_ann_pat(&surface_param.pat, surface_param.r#type.as_ref())?;
+        let name = pat.name();
         let r#type = self.quote(&r#type_value);
         Ok((
             FunParam::new(surface_param.plicity, name, self.bump.alloc(r#type)),
@@ -1056,9 +1059,10 @@ where
         expected: &Type<'core>,
     ) -> Result<FunParam<&'core Expr<'core>>, E> {
         let surface_param = surface_param.data;
-        let name =
+        let pat =
             self.check_ann_pat(&surface_param.pat, surface_param.r#type.as_ref(), expected)?;
         let r#type = self.quote(expected);
+        let name = pat.name();
         Ok(FunParam::new(
             surface_param.plicity,
             name,
@@ -1070,7 +1074,7 @@ where
         &mut self,
         surface_pat: &'surface Located<surface::Pat<'surface>>,
         surface_ann: Option<&'surface Located<surface::Expr<'surface>>>,
-    ) -> Result<(Option<Symbol>, Type<'core>), E> {
+    ) -> Result<(Pat<'core>, Type<'core>), E> {
         match surface_ann {
             None => self.synth_pat(surface_pat),
             Some(surface_ann) => {
@@ -1087,7 +1091,7 @@ where
         surface_pat: &'surface Located<surface::Pat<'surface>>,
         surface_ann: Option<&'surface Located<surface::Expr<'surface>>>,
         expected: &Type<'core>,
-    ) -> Result<Option<Symbol>, E> {
+    ) -> Result<Pat<'core>, E> {
         match surface_ann {
             None => self.check_pat(surface_pat, expected),
             Some(surface_ann) => {
@@ -1103,25 +1107,61 @@ where
     fn synth_pat(
         &mut self,
         surface_pat: &'surface Located<surface::Pat<'surface>>,
-    ) -> Result<(Option<Symbol>, Type<'core>), E> {
+    ) -> Result<(Pat<'core>, Type<'core>), E> {
         match surface_pat.data {
-            surface::Pat::Error => Ok((None, Type::Error)),
+            surface::Pat::Error => Ok((Pat::Error, Type::Error)),
             surface::Pat::Underscore => {
                 let range = surface_pat.range;
                 let name = None;
                 let source = MetaSource::PatType { range, name };
                 let r#type = self.push_unsolved_type(source);
-                Ok((name, r#type))
+                Ok((Pat::Underscore, r#type))
             }
             surface::Pat::Ident => {
                 let range = surface_pat.range;
                 let text = &self.text[range];
-                let name = Some(Symbol::intern(text));
-                let source = MetaSource::PatType { range, name };
+                let name = Symbol::intern(text);
+                let source = MetaSource::PatType {
+                    range,
+                    name: Some(name),
+                };
                 let r#type = self.push_unsolved_type(source);
-                Ok((name, r#type))
+                Ok((Pat::Ident(name), r#type))
             }
             surface::Pat::Paren { pat } => self.synth_pat(pat),
+            surface::Pat::TupleLit(pats) => {
+                let mut pat_fields = SliceVec::new(self.bump, pats.len());
+                let mut type_fields = SliceVec::new(self.bump, pats.len());
+                let mut offset = EnvLen::new();
+                for (index, pat) in pats.iter().enumerate() {
+                    let name = Symbol::tuple_index(index);
+                    let (pat, r#type) = self.synth_pat(pat)?;
+                    pat_fields.push((name, pat));
+                    type_fields.push((name, self.quote_offset(&r#type, offset)));
+                    offset.push();
+                }
+
+                let telescope = Telescope::new(self.local_env.values.clone(), type_fields.into());
+                let r#type = Type::RecordType(telescope);
+                Ok((Pat::RecordLit(pat_fields.into()), r#type))
+            }
+            surface::Pat::RecordLit(fields) => {
+                let mut pat_fields = SliceVec::new(self.bump, fields.len());
+                let mut type_fields = SliceVec::new(self.bump, fields.len());
+                let mut offset = EnvLen::new();
+
+                for field in fields {
+                    let surface::PatField { name, pat } = field.data;
+                    let (pat, r#type) = self.synth_pat(&pat)?;
+                    pat_fields.push((name.data, pat));
+                    type_fields.push((name.data, self.quote_offset(&r#type, offset)));
+                    offset.push();
+                }
+
+                let telescope = Telescope::new(self.local_env.values.clone(), type_fields.into());
+                let r#type = Type::RecordType(telescope);
+                Ok((Pat::RecordLit(pat_fields.into()), r#type))
+            }
         }
     }
 
@@ -1130,15 +1170,18 @@ where
         &mut self,
         surface_pat: &'surface Located<surface::Pat<'surface>>,
         expected: &Type<'core>,
-    ) -> Result<Option<Symbol>, E> {
+    ) -> Result<Pat<'core>, E> {
         match surface_pat.data {
-            surface::Pat::Error | surface::Pat::Underscore => Ok(None),
+            surface::Pat::Error => Ok(Pat::Error),
+            surface::Pat::Underscore => Ok(Pat::Underscore),
             surface::Pat::Ident => {
                 let text = &self.text[surface_pat.range];
                 let symbol = Symbol::intern(text);
-                Ok(Some(symbol))
+                Ok(Pat::Ident(symbol))
             }
             surface::Pat::Paren { pat } => self.check_pat(pat, expected),
+            surface::Pat::TupleLit(_) => todo!(),
+            surface::Pat::RecordLit(_) => todo!(),
         }
     }
 
