@@ -1,3 +1,6 @@
+use codespan_reporting::diagnostic::{Diagnostic, Label};
+use text_size::TextRange;
+
 use crate::core::semantics::{self, Closure, Elim, EvalOpts, Head, MetaValues, Value};
 use crate::core::syntax::{Const, Expr, FunArg, FunParam};
 use crate::env::{AbsoluteVar, EnvLen, RelativeVar, SharedEnv, SliceEnv, UniqueEnv};
@@ -507,6 +510,27 @@ pub enum UnifyError {
     Spine(SpineError),
     /// An error that occurred when renaming the solution.
     Rename(RenameError),
+}
+
+impl UnifyError {
+    pub fn to_diagnostic(
+        self,
+        file_id: usize,
+        range: TextRange,
+        expected: &str,
+        found: &str,
+    ) -> Diagnostic<usize> {
+        let message = match self {
+            Self::Mismatch => format!("type mismatch: expected `{expected}`, found `{found}`"),
+            Self::Spine(_) => String::from("variable appeared more than once in problem spine"),
+            Self::Rename(_) => {
+                String::from("application in problem spine was not a local variable")
+            }
+        };
+        Diagnostic::error()
+            .with_message(message)
+            .with_labels(vec![Label::primary(file_id, range)])
+    }
 }
 
 impl From<SpineError> for UnifyError {

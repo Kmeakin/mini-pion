@@ -121,6 +121,14 @@ pub enum Pat<'surface> {
     Underscore,
     Ident,
     Paren(&'surface Located<Self>),
+    TupleLit(&'surface [Located<Self>]),
+    RecordLit(&'surface [Located<PatField<'surface>>]),
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct PatField<'surface> {
+    pub name: Located<Symbol>,
+    pub pat: Located<Pat<'surface>>,
 }
 
 #[derive(Debug, Copy, Clone)]

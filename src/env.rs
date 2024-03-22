@@ -45,6 +45,11 @@ impl fmt::Display for RelativeVar {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.fmt(f) }
 }
 
+impl Add<EnvLen> for RelativeVar {
+    type Output = Self;
+    fn add(self, rhs: EnvLen) -> Self::Output { Self(self.0 + rhs.0) }
+}
+
 /// A specialized representation of an environment for when we don't care about
 /// the elements themselves, just the number of elements in the environment.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Default, Hash)]

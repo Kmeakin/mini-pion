@@ -71,7 +71,7 @@ error: Syntax error: unexpected end of file
   ┌─ <stdin>:1:4
   │
 1 │ fun
-  │    ^ expected one of "(", "@", "Ident" or "_"
+  │    ^ expected one of "(", "@", "Ident", "_" or "{"
 "##]],
     );
 }
@@ -214,6 +214,7 @@ let f : Bool -> Bool = fun (x : Bool) => x;
 let f : Bool -> Bool = fun (x : Bool) => x;
 (f false) : Bool"#]],
     );
+    check("let _ = 5; 10", expect!["10 : Int"]);
 }
 
 #[test]
@@ -399,5 +400,32 @@ fact : Int -> Int"#]],
     eval(
         "let rec fact : Int -> Int = fun n => if eq n 0 then 1 else mul n (fact (sub n 1)); fact 5",
         expect!["120 : Int"],
+    );
+}
+
+#[test]
+fn record_pats() {
+    check(
+        "let p = (1, 2); let (x, y) = p; 5",
+        expect![[r#"
+let p : (Int, Int) = (1, 2);
+let x : Int = p._0;
+let y : Int = p._1;
+5 : Int"#]],
+    );
+    check(
+        "let (x, y) = (1, 2); (y, x)",
+        expect![[r#"
+let x : Int = (1, 2)._0;
+let y : Int = (1, 2)._1;
+(y, x) : (Int, Int)"#]],
+    );
+
+    check(
+        "fun ((x, y) : (Int, Bool)) => (y, x)",
+        expect![[r#"
+(fun (_ : (Int, Bool)) => let x : Int = _#0._0;
+let y : Bool = _#1._1;
+(y, x)) : (Int, Bool) -> (Bool, Int)"#]],
     );
 }

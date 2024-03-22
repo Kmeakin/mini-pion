@@ -1,7 +1,7 @@
 use text_size::{TextRange, TextSize};
 use codespan_reporting::diagnostic::Diagnostic;
 
-use crate::surface::{Const, Expr, Located, Pat, Token, TokenKind, FunParam, FunArg, Rec, ExprField, TypeField};
+use crate::surface::{Const, Expr, Located, Pat, Token, TokenKind, FunParam, FunArg, Rec, ExprField, TypeField, PatField};
 use crate::surface::LalrpopError;
 use crate::plicity::Plicity;
 use crate::symbol::Symbol;
@@ -181,6 +181,12 @@ Pat: Located<Pat<'surface>> = {
     <start: @L> "_" <end: @R> => Located::new(TextRange::new(start, end), Pat::Underscore),
     <start: @L> "Ident" <end: @R> => Located::new(TextRange::new(start, end), Pat::Ident),
     <start: @L> "(" <pat: Pat> ")" <end: @R> => Located::new(TextRange::new(start, end), Pat::Paren(bump.alloc(pat))),
+    <start: @L> <pats: Tuple<Pat>> <end: @R> => Located::new(TextRange::new(start, end), Pat::TupleLit(pats)),
+    <start: @L> "{" <fields: Sep0<PatField, ",">> "}" <end: @R> => Located::new(TextRange::new(start, end), Pat::RecordLit(fields)),
+}
+
+PatField: Located<PatField<'surface>> = {
+    <start: @L> <name: Ident> "=" <pat: Pat> <end: @R> => Located::new(TextRange::new(start, end), PatField { name, pat }),
 }
 
 Const: Const = {

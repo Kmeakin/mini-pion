@@ -137,10 +137,10 @@ impl<'bump> Printer<'bump> {
             Expr::Const(r#const) => self.r#const(*r#const),
             Expr::LocalVar(var) if self.config.print_names => match names.get_relative(*var) {
                 Some(Some(name)) => self.text(name.to_string()),
-                Some(None) => panic!("Unnamed variable: {var:?}"),
+                Some(None) => self.text(format!("_#{var}")),
                 None => panic!("Unbound variable: {var:?}"),
             },
-            Expr::LocalVar(var) => self.text(format!("_{var}")),
+            Expr::LocalVar(var) => self.text(format!("_#{var}")),
             Expr::MetaVar(var) => self.text(format!("?{var}")),
             Expr::Let {
                 name,
