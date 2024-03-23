@@ -28,7 +28,7 @@ impl<'bump, Elem> SliceVec<'bump, Elem> {
     /// # Panics
     ///
     /// If the type has drop-glue to be executed.
-    pub fn new(bump: &'bump bumpalo::Bump, capacity: usize) -> SliceVec<'bump, Elem> {
+    pub fn new(bump: &'bump bumpalo::Bump, capacity: usize) -> Self {
         // NOTE: Ensure that that the element type does not have any drop glue.
         //       This would be problematic as we have no way of registering the
         //       drop glue of `Elem` with `scoped_arena::Scope`.

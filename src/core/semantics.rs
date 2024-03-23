@@ -127,7 +127,9 @@ impl<'core> Telescope<'core> {
         }
     }
 
-    pub fn len(&self) -> usize { self.fields.len() }
+    pub const fn len(&self) -> usize { self.fields.len() }
+
+    pub const fn is_empty(&self) -> bool { self.len() == 0 }
 }
 
 pub type LocalValues<'core> = SharedEnv<Value<'core>>;
@@ -337,7 +339,7 @@ pub fn apply_bool_elim<'core>(
     }
 }
 
-pub fn record_proj<'core>(scrut: Value<'core>, name: Symbol) -> Value<'core> {
+pub fn record_proj(scrut: Value, name: Symbol) -> Value {
     match scrut {
         Value::Error => Value::Error,
         Value::Neutral { head, mut spine } => {
